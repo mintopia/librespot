@@ -80,10 +80,10 @@ jobs:
           key: ${{ runner.os }}-${{ steps.get-rustc-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
 
       - run: cargo fetch --locked
-      - run: cargo build --frozen --workspace --examples --release
+      - run: cargo build --frozen --release
 
-      - name: Archive code coverage results
+      - name: Upload build
         uses: actions/upload-artifact@v4
         with:
           name: librespot.exe
-          path: target/release/librespot.exe
+          path: ./target/release/librespot.exe
