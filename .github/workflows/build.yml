@@ -1,0 +1,147 @@
+# Note, this is used in the badge URL!
+name: test
+
+on:
+  push:
+    branches: [dev, master]
+    paths:
+      [
+        "**.rs",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rustfmt.toml",
+        ".github/workflows/*",
+        "!*.md",
+        "!contrib/*",
+        "!docs/*",
+        "!LICENSE",
+        "!*.sh",
+      ]
+  pull_request:
+    paths:
+      [
+        "**.rs",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rustfmt.toml",
+        ".github/workflows/*",
+        "!*.md",
+        "!contrib/*",
+        "!docs/*",
+        "!LICENSE",
+        "!*.sh",
+      ]
+  schedule:
+    # Run CI every week
+    - cron: "00 01 * * 0"
+  workflow_dispatch:
+env:
+  RUST_BACKTRACE: 1
+  RUSTFLAGS: -D warnings
+
+# The layering here is as follows:
+#  1. code formatting
+#  2. absence of lints
+#  3. absence of errors and warnings on Linux/x86
+#  4. cross compilation on Windows and Linux/ARM
+
+jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.2.0
+      - name: Install toolchain
+        run: curl https://sh.rustup.rs -sSf | sh -s -- --profile default --default-toolchain stable  -y
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    needs: fmt
+    name: cargo +${{ matrix.toolchain }} clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: false
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        toolchain: [stable]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.2.0
+
+      - name: Install toolchain
+        run: curl https://sh.rustup.rs -sSf | sh -s -- --profile default --default-toolchain ${{ matrix.toolchain }}  -y
+
+      - name: Get Rustc version
+        id: get-rustc-version
+        run: echo "version=$(rustc -V)" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4.0.2
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ steps.get-rustc-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install developer package dependencies
+        run: sudo apt-get update && sudo apt install -y libunwind-dev && sudo apt-get install libpulse-dev portaudio19-dev libasound2-dev libsdl2-dev gstreamer1.0-dev libgstreamer-plugins-base1.0-dev libavahi-compat-libdnssd-dev
+
+      - run: cargo install cargo-hack
+      - run: cargo hack --workspace --remove-dev-deps
+      - run: cargo clippy -p librespot-core --no-default-features
+      - run: cargo clippy -p librespot-core
+      - run: cargo hack clippy --each-feature -p librespot-discovery
+      - run: cargo hack clippy --each-feature -p librespot-playback
+      - run: cargo hack clippy --each-feature
+
+  build-windows:
+    needs: clippy
+    name: cargo +${{ matrix.toolchain }} build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: false
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+        toolchain:
+          - "1.74" # MSRV (Minimum supported rust version)
+          - stable
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4.2.0
+    
+      # hyper-rustls >=0.27 uses aws-lc as default backend which requires NASM to build
+      - name: Install NASM
+        uses: ilammy/setup-nasm@v1.5.1
+
+      - name: Install toolchain
+        run: curl https://sh.rustup.rs -sSf | sh -s -- --profile minimal --default-toolchain ${{ matrix.toolchain }}  -y
+
+      - name: Get Rustc version
+        id: get-rustc-version
+        run: echo "version=$(rustc -V)" >> $GITHUB_OUTPUT
+        shell: bash
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4.0.2
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ steps.get-rustc-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+
+      - run: cargo fetch --locked
+      - run: cargo build --frozen --workspace --examples --release
+
+      - name: Archive code coverage results
+        uses: actions/upload-artifact@v4
+        with:
+          name: librespot.exe
+          path: target/release/librespot.exe
